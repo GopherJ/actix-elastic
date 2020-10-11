@@ -3,6 +3,10 @@ name = "actix-elastic"
 version = "1.0.0"
 authors = ["Cheng JIANG <jiang.cheng@vip.163.com>"]
 edition = "2018"
+license = "MIT"
+description = "elasticsearch 7.x actix actor"
+keywords = ["actix", "elasticsearch", "actix-web"]
+repository = "https://github.com/GopherJ/actix-elastic"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
