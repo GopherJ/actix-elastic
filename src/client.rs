@@ -10,7 +10,7 @@ use elasticsearch::{
         transport::{SingleNodeConnectionPool, TransportBuilder},
     },
     BulkParts, ClearScrollParts, DeleteByQueryParts, Elasticsearch, IndexParts, ScrollParts,
-    SearchParts,
+    SearchParts, UpdateByQueryParts,
 };
 use futures::{
     future::{BoxFuture, Future, FutureExt},
@@ -119,8 +119,11 @@ pub enum EsCmd<T: Serialize + DeserializeOwned + 'static> {
     Ping,
     Index(&'static str, (String, T)),
     BulkIndex(&'static str, Vec<(String, T)>),
+    BulkDelete(&'static str, Vec<String>),
     Search(&'static str, Value),
+    SearchHits(&'static str, Value),
     DeleteByQuery(&'static str, Value),
+    UpdateByQuery(&'static str, Value),
     ScrollHits(&'static str, Value),
 }
 
@@ -128,8 +131,11 @@ pub enum EsResult<T: Serialize + DeserializeOwned + 'static> {
     Ping,
     Index,
     BulkIndex(Vec<String>),
+    BulkDelete(Vec<String>),
     Search(SearchResponse<T>),
+    SearchHits(Vec<T>),
     DeleteByQuery,
+    UpdateByQuery,
     ScrollHits(ScrollStream<T>),
 }
 
@@ -192,6 +198,32 @@ impl<T: Serialize + DeserializeOwned + Eq + Hash + Unpin + 'static> Handler<EsCm
                             ))
                         }
                     }),
+                EsCmd::BulkDelete(index, body) => client
+                    .bulk(BulkParts::Index(index))
+                    .body(
+                        body.into_iter()
+                            .map(|id| vec![JsonBody::from(json!({"delete": {"_id": id }}))])
+                            .flatten()
+                            .collect(),
+                    )
+                    .send()
+                    .await
+                    .and_then(|resp| match resp.error_for_status_code() {
+                        Ok(res) => Ok(res),
+                        Err(err) => Err(err),
+                    })?
+                    .json::<BulkResponse>()
+                    .await
+                    .map_err(Error::from)
+                    .and_then(|resp| {
+                        if let Some(first_error) = resp.first_error() {
+                            Err(Error::from(first_error))
+                        } else {
+                            Ok(EsResult::BulkDelete(
+                                resp.succeed_items().map(|x| x.get_id()).collect(),
+                            ))
+                        }
+                    }),
                 EsCmd::Search(index, body) => Ok(client
                     .search(SearchParts::Index(&[index]))
                     .body(body)
@@ -204,13 +236,38 @@ impl<T: Serialize + DeserializeOwned + Eq + Hash + Unpin + 'static> Handler<EsCm
                     .json::<SearchResponse<T>>()
                     .await
                     .map(|res| EsResult::Search(res))?),
-                EsCmd::DeleteByQuery(index, body) => Ok(client
-                    .delete_by_query(DeleteByQueryParts::Index(&[index]))
+                EsCmd::SearchHits(index, body) => Ok(client
+                    .search(SearchParts::Index(&[index]))
                     .body(body)
                     .send()
                     .await
                     .and_then(|resp| match resp.error_for_status_code() {
+                        Ok(res) => Ok(res),
+                        Err(err) => Err(err),
+                    })?
+                    .json::<SearchResponse<T>>()
+                    .await
+                    .map(|res| {
+                        EsResult::SearchHits(
+                            res.hits.hits.into_iter().filter_map(|x| x.source).collect(),
+                        )
+                    })?),
+                EsCmd::DeleteByQuery(index, query) => Ok(client
+                    .delete_by_query(DeleteByQueryParts::Index(&[index]))
+                    .body(query)
+                    .send()
+                    .await
+                    .and_then(|resp| match resp.error_for_status_code() {
                         Ok(_) => Ok(EsResult::DeleteByQuery),
+                        Err(err) => Err(err.into()),
+                    })?),
+                EsCmd::UpdateByQuery(index, body) => Ok(client
+                    .update_by_query(UpdateByQueryParts::Index(&[index]))
+                    .body(body)
+                    .send()
+                    .await
+                    .and_then(|resp| match resp.error_for_status_code() {
+                        Ok(_) => Ok(EsResult::UpdateByQuery),
                         Err(err) => Err(err.into()),
                     })?),
                 EsCmd::ScrollHits(index, body) => {
