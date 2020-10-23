@@ -58,12 +58,30 @@ addr.send(EsCmd::DeleteByQuery("example_index_1", json!({
 ```rust
 use actix_web::HttpResponse;
 
-match addr.send(EsCmd::ScrollHits("example_index_1", json!({
+match addr.send(EsCmd::ScrollBytes("example_index_1", json!({
     "query": {
         "match_all": {}
     }
 }))).await?? {
-    EsResult::ScrollHits(stream) => Ok(HttpResponse::Ok().content_type("application/json").streaming_response(stream)),
+    EsResult::ScrollBytes(stream) => Ok(HttpResponse::Ok().content_type("application/json").streaming_response(stream)),
+        _ => unreachable!()
+}
+```
+
+4. Scroll Deserialized Items
+
+```rust
+
+match addr.send(EsCmd::ScrollItems("example_index_1", json!({
+    "query": {
+        "match_all": {}
+    }
+}))).await?? {
+    EsResult::ScrollItems(mut stream) => {
+        while let Some(hits) = stream.next().await {
+            println!("{:?}", hits.len());
+        }
+    },
         _ => unreachable!()
 }
 ```

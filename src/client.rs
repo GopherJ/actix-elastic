@@ -124,7 +124,8 @@ pub enum EsCmd<T: Serialize + DeserializeOwned + 'static> {
     SearchHits(&'static str, Value),
     DeleteByQuery(&'static str, Value),
     UpdateByQuery(&'static str, Value),
-    ScrollHits(&'static str, Value),
+    ScrollBytes(&'static str, Value),
+    ScrollItems(&'static str, Value),
 }
 
 pub enum EsResult<T: Serialize + DeserializeOwned + 'static> {
@@ -136,7 +137,8 @@ pub enum EsResult<T: Serialize + DeserializeOwned + 'static> {
     SearchHits(Vec<T>),
     DeleteByQuery,
     UpdateByQuery,
-    ScrollHits(ScrollStream<T>),
+    ScrollBytes(ScrollBytesStream<T>),
+    ScrollItems(ScrollItemsStream<T>),
 }
 
 impl<T: Serialize + DeserializeOwned + Eq + Hash + Unpin + 'static> Handler<EsCmd<T>>
@@ -270,9 +272,12 @@ impl<T: Serialize + DeserializeOwned + Eq + Hash + Unpin + 'static> Handler<EsCm
                         Ok(_) => Ok(EsResult::UpdateByQuery),
                         Err(err) => Err(err.into()),
                     })?),
-                EsCmd::ScrollHits(index, body) => {
-                    Ok(EsResult::ScrollHits(ScrollStream::new(index, body, client)))
-                }
+                EsCmd::ScrollBytes(index, body) => Ok(EsResult::ScrollBytes(
+                    ScrollBytesStream::new(index, body, client),
+                )),
+                EsCmd::ScrollItems(index, body) => Ok(EsResult::ScrollItems(
+                    ScrollItemsStream::new(index, body, client),
+                )),
             }
         }
         .into_actor(self)
@@ -291,7 +296,7 @@ impl<T: Serialize + DeserializeOwned + Eq + Hash + Unpin + 'static> Handler<EsCm
 }
 
 #[pin_project]
-pub struct ScrollStream<T: Serialize + DeserializeOwned + 'static> {
+pub struct ScrollBytesStream<T: Serialize + DeserializeOwned + 'static> {
     #[pin]
     fut: Option<BoxFuture<'static, Result<Option<ScrollResponse<T>>>>>,
     index: &'static str,
@@ -302,7 +307,7 @@ pub struct ScrollStream<T: Serialize + DeserializeOwned + 'static> {
     client: Elasticsearch,
 }
 
-impl<T: Serialize + DeserializeOwned + 'static> ScrollStream<T> {
+impl<T: Serialize + DeserializeOwned + 'static> ScrollBytesStream<T> {
     pub fn new(index: &'static str, query: Value, client: Elasticsearch) -> Self {
         Self {
             fut: None,
@@ -316,7 +321,31 @@ impl<T: Serialize + DeserializeOwned + 'static> ScrollStream<T> {
     }
 }
 
-impl<T: Serialize + DeserializeOwned + 'static> Stream for ScrollStream<T> {
+#[pin_project]
+pub struct ScrollItemsStream<T: Serialize + DeserializeOwned + 'static> {
+    #[pin]
+    fut: Option<BoxFuture<'static, Result<Option<ScrollResponse<T>>>>>,
+    index: &'static str,
+    query: Value,
+    current: usize,
+    total: Option<usize>,
+    client: Elasticsearch,
+}
+
+impl<T: Serialize + DeserializeOwned + 'static> ScrollItemsStream<T> {
+    pub fn new(index: &'static str, query: Value, client: Elasticsearch) -> Self {
+        Self {
+            fut: None,
+            current: 0,
+            total: None,
+            query,
+            index,
+            client,
+        }
+    }
+}
+
+impl<T: Serialize + DeserializeOwned + 'static> Stream for ScrollBytesStream<T> {
     type Item = Result<Bytes>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut StdContext) -> Poll<Option<Self::Item>> {
@@ -407,6 +436,75 @@ impl<T: Serialize + DeserializeOwned + 'static> Stream for ScrollStream<T> {
                             Poll::Ready(Some(Ok(b.into())))
                         }
                     };
+                }
+            },
+        }
+    }
+}
+
+impl<T: Serialize + DeserializeOwned + 'static> Stream for ScrollItemsStream<T> {
+    type Item = Result<Vec<Hit<T>>>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut StdContext) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
+        if this.fut.is_none() && *this.current == 0 && this.total.is_none() {
+            this.fut.as_mut().set(Some(
+                scroll_start_response(this.index, this.query.clone(), this.client.clone()).boxed(),
+            ));
+        }
+
+        match this.fut.as_mut().as_pin_mut() {
+            None => Poll::Ready(None),
+            Some(f) => match f.poll(cx) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(Err(err)) => {
+                    this.fut.as_mut().set(None);
+                    Poll::Ready(Some(Err(err.into())))
+                }
+                Poll::Ready(Ok(None)) => {
+                    this.fut.as_mut().set(None);
+                    Poll::Ready(None)
+                }
+                Poll::Ready(Ok(Some(scroll_resp))) => {
+                    let scroll_id = scroll_resp.scroll_id;
+                    let hits = scroll_resp.hits.hits;
+                    let hits_len = hits.len();
+
+                    let total = *this.total.get_or_insert(scroll_resp.hits.total.value);
+
+                    if total == 0 {
+                        this.fut
+                            .as_mut()
+                            .set(Some(clear_scroll(scroll_id, this.client.clone()).boxed()));
+                        return Poll::Ready(Some(Ok::<_, Error>(vec![])));
+                    }
+
+                    if hits_len == total {
+                        this.fut
+                            .as_mut()
+                            .set(Some(clear_scroll(scroll_id, this.client.clone()).boxed()));
+                        *this.current = total;
+                        return Poll::Ready(Some(Ok::<_, Error>(hits)));
+                    }
+
+                    let next_current = *this.current + hits_len;
+
+                    if total > next_current {
+                        *this.current = next_current;
+
+                        this.fut.as_mut().set(Some(
+                            scroll_next_response(scroll_id, this.client.clone()).boxed(),
+                        ));
+                    } else {
+                        *this.current = total;
+
+                        this.fut
+                            .as_mut()
+                            .set(Some(clear_scroll(scroll_id, this.client.clone()).boxed()));
+                    }
+
+                    Poll::Ready(Some(Ok(hits)))
                 }
             },
         }
