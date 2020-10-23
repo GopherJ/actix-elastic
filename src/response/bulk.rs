@@ -6,9 +6,9 @@ use std::fmt;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BulkResponse {
-    took: i32,
-    errors: bool,
-    items: Vec<Item>,
+    pub took: i32,
+    pub errors: bool,
+    pub items: Vec<Item>,
 }
 
 impl BulkResponse {
@@ -68,22 +68,22 @@ impl Item {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ItemBody {
     #[serde(rename = "_index")]
-    index: String,
+    pub index: String,
     #[serde(rename = "_type")]
-    ty: String,
+    pub ty: String,
     #[serde(rename = "_id")]
-    id: String,
+    pub id: String,
     #[serde(rename = "_version")]
-    version: Option<i32>,
+    pub version: Option<i32>,
     #[serde(rename = "_shards")]
-    shards: Option<Shards>,
+    pub shards: Option<Shards>,
     #[serde(rename = "_seq_no")]
-    seq_no: Option<i64>,
+    pub seq_no: Option<i64>,
     #[serde(rename = "_primary_term")]
-    primary_term: Option<i64>,
-    result: Option<String>,
-    status: i32,
-    error: Option<ItemError>,
+    pub primary_term: Option<i64>,
+    pub result: Option<String>,
+    pub status: i32,
+    pub error: Option<ItemError>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -5,6 +5,7 @@ use actix::{
 use backoff::{backoff::Backoff, ExponentialBackoff};
 use bytes::{BufMut, Bytes, BytesMut};
 use elasticsearch::{
+    cat::{CatIndices, CatIndicesParts},
     http::{
         request::JsonBody,
         transport::{SingleNodeConnectionPool, TransportBuilder},
@@ -24,14 +25,13 @@ use url::Url;
 
 use crate::{
     error::{Error, Result},
-    response::{BulkResponse, Hit, ScrollResponse, SearchResponse},
+    response::{BulkResponse, CatIndicesResponse, Hit, ScrollResponse, SearchResponse},
 };
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 
 use std::{
-    hash::Hash,
     io::{Error as IoError, ErrorKind},
     marker::PhantomData,
     pin::Pin,
@@ -39,6 +39,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Debug)]
 pub struct EsClient<T> {
     url: Url,
     hb: Instant,
@@ -47,7 +48,7 @@ pub struct EsClient<T> {
     _marker: PhantomData<T>,
 }
 
-impl<T: Serialize + DeserializeOwned + Eq + Hash + Unpin + 'static> EsClient<T> {
+impl<T: Serialize + DeserializeOwned + Unpin + 'static> EsClient<T> {
     pub fn new(url: &str) -> Result<EsClient<T>> {
         let url = Url::parse(url)?;
 
@@ -97,7 +98,7 @@ impl<T: Serialize + DeserializeOwned + Eq + Hash + Unpin + 'static> EsClient<T> 
     }
 }
 
-impl<T: Serialize + DeserializeOwned + Eq + Hash + Unpin + 'static> Actor for EsClient<T> {
+impl<T: Serialize + DeserializeOwned + Unpin + 'static> Actor for EsClient<T> {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
@@ -106,14 +107,14 @@ impl<T: Serialize + DeserializeOwned + Eq + Hash + Unpin + 'static> Actor for Es
     }
 }
 
-impl<T: Serialize + DeserializeOwned + Eq + Hash + Unpin + 'static> Supervised for EsClient<T> {
+impl<T: Serialize + DeserializeOwned + Unpin + 'static> Supervised for EsClient<T> {
     fn restarting(&mut self, _: &mut Self::Context) {
         self.client.take();
         error!("reconnecting to elasticsearch at: `{}`", self.url);
     }
 }
 
-#[derive(Message)]
+#[derive(Message, Debug)]
 #[rtype(result = "Result<EsResult<T>>")]
 pub enum EsCmd<T: Serialize + DeserializeOwned + 'static> {
     Ping,
@@ -126,6 +127,7 @@ pub enum EsCmd<T: Serialize + DeserializeOwned + 'static> {
     UpdateByQuery(&'static str, Value),
     ScrollBytes(&'static str, Value),
     ScrollItems(&'static str, Value),
+    CatIndices,
 }
 
 pub enum EsResult<T: Serialize + DeserializeOwned + 'static> {
@@ -139,11 +141,10 @@ pub enum EsResult<T: Serialize + DeserializeOwned + 'static> {
     UpdateByQuery,
     ScrollBytes(ScrollBytesStream<T>),
     ScrollItems(ScrollItemsStream<T>),
+    CatIndices(Vec<CatIndicesResponse>),
 }
 
-impl<T: Serialize + DeserializeOwned + Eq + Hash + Unpin + 'static> Handler<EsCmd<T>>
-    for EsClient<T>
-{
+impl<T: Serialize + DeserializeOwned + Unpin + 'static> Handler<EsCmd<T>> for EsClient<T> {
     type Result = ResponseActFuture<Self, Result<EsResult<T>>>;
 
     fn handle(&mut self, msg: EsCmd<T>, _ctx: &mut Self::Context) -> Self::Result {
@@ -278,6 +279,17 @@ impl<T: Serialize + DeserializeOwned + Eq + Hash + Unpin + 'static> Handler<EsCm
                 EsCmd::ScrollItems(index, body) => Ok(EsResult::ScrollItems(
                     ScrollItemsStream::new(index, body, client),
                 )),
+                EsCmd::CatIndices => Ok(CatIndices::new(client.transport(), CatIndicesParts::None)
+                    .format("json")
+                    .send()
+                    .await
+                    .and_then(|resp| match resp.error_for_status_code() {
+                        Ok(res) => Ok(res),
+                        Err(err) => Err(err),
+                    })?
+                    .json::<Vec<CatIndicesResponse>>()
+                    .await
+                    .map(|res| EsResult::CatIndices(res))?),
             }
         }
         .into_actor(self)

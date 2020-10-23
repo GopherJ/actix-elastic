@@ -22,7 +22,7 @@ use actix_elastic::{EsClient, EsCmd, EsResult};
 let arb = Arbiter::new();
 let elastic_url = "http://127.0.0.1:9200"
 
-let addr: Addr<EsClient<CustomType>> = Supervisor::start_in_arbiter(&arb, |_| EsClient::new(elastic_url);
+let addr: Addr<EsClient<CustomType>> = Supervisor::start_in_arbiter(&arb, move |_| EsClient::new(elastic_url).unwrap());
 ```
 
 2. Send elastic command
