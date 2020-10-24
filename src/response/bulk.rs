@@ -92,7 +92,7 @@ pub struct ItemError {
     ty: String,
     reason: String,
     index_uuid: String,
-    shard: String,
+    shard: Option<String>,
     index: String,
 }
 
