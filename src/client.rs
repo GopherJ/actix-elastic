@@ -32,6 +32,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 
 use std::{
+    borrow::Cow,
     io::{Error as IoError, ErrorKind},
     marker::PhantomData,
     pin::Pin,
@@ -118,15 +119,15 @@ impl<T: Serialize + DeserializeOwned + Unpin + 'static> Supervised for EsClient<
 #[rtype(result = "Result<EsResult<T>>")]
 pub enum EsCmd<T: Serialize + DeserializeOwned + 'static> {
     Ping,
-    Index(&'static str, (String, T)),
-    BulkIndex(&'static str, Vec<(String, T)>),
-    BulkDelete(&'static str, Vec<String>),
-    Search(&'static str, Value),
-    SearchHits(&'static str, Value),
-    DeleteByQuery(&'static str, Value),
-    UpdateByQuery(&'static str, Value),
-    ScrollBytes(&'static str, Value),
-    ScrollItems(&'static str, Value),
+    Index(Cow<'static, str>, (String, T)),
+    BulkIndex(Cow<'static, str>, Vec<(String, T)>),
+    BulkDelete(Cow<'static, str>, Vec<String>),
+    Search(Cow<'static, str>, Value),
+    SearchHits(Cow<'static, str>, Value),
+    DeleteByQuery(Cow<'static, str>, Value),
+    UpdateByQuery(Cow<'static, str>, Value),
+    ScrollBytes(String, Value),
+    ScrollItems(String, Value),
     CatIndices,
 }
 
@@ -162,7 +163,7 @@ impl<T: Serialize + DeserializeOwned + Unpin + 'static> Handler<EsCmd<T>> for Es
             match msg {
                 EsCmd::Ping => Ok(client.ping().send().await.map(|_| EsResult::Ping)?),
                 EsCmd::Index(index, (id, body)) => Ok(client
-                    .index(IndexParts::IndexId(index, &id))
+                    .index(IndexParts::IndexId(&index, &id))
                     .body(body)
                     .send()
                     .await
@@ -171,7 +172,7 @@ impl<T: Serialize + DeserializeOwned + Unpin + 'static> Handler<EsCmd<T>> for Es
                         Err(err) => Err(err),
                     })?),
                 EsCmd::BulkIndex(index, body) => client
-                    .bulk(BulkParts::Index(index))
+                    .bulk(BulkParts::Index(&index))
                     .body(
                         body.into_iter()
                             .map(|(id, x)| {
@@ -202,7 +203,7 @@ impl<T: Serialize + DeserializeOwned + Unpin + 'static> Handler<EsCmd<T>> for Es
                         }
                     }),
                 EsCmd::BulkDelete(index, body) => client
-                    .bulk(BulkParts::Index(index))
+                    .bulk(BulkParts::Index(&index))
                     .body(
                         body.into_iter()
                             .map(|id| vec![JsonBody::from(json!({"delete": {"_id": id }}))])
@@ -228,7 +229,7 @@ impl<T: Serialize + DeserializeOwned + Unpin + 'static> Handler<EsCmd<T>> for Es
                         }
                     }),
                 EsCmd::Search(index, body) => Ok(client
-                    .search(SearchParts::Index(&[index]))
+                    .search(SearchParts::Index(&[&index]))
                     .body(body)
                     .send()
                     .await
@@ -240,7 +241,7 @@ impl<T: Serialize + DeserializeOwned + Unpin + 'static> Handler<EsCmd<T>> for Es
                     .await
                     .map(|res| EsResult::Search(res))?),
                 EsCmd::SearchHits(index, body) => Ok(client
-                    .search(SearchParts::Index(&[index]))
+                    .search(SearchParts::Index(&[&index]))
                     .body(body)
                     .send()
                     .await
@@ -256,7 +257,7 @@ impl<T: Serialize + DeserializeOwned + Unpin + 'static> Handler<EsCmd<T>> for Es
                         )
                     })?),
                 EsCmd::DeleteByQuery(index, query) => Ok(client
-                    .delete_by_query(DeleteByQueryParts::Index(&[index]))
+                    .delete_by_query(DeleteByQueryParts::Index(&[&index]))
                     .body(query)
                     .send()
                     .await
@@ -265,7 +266,7 @@ impl<T: Serialize + DeserializeOwned + Unpin + 'static> Handler<EsCmd<T>> for Es
                         Err(err) => Err(err.into()),
                     })?),
                 EsCmd::UpdateByQuery(index, body) => Ok(client
-                    .update_by_query(UpdateByQueryParts::Index(&[index]))
+                    .update_by_query(UpdateByQueryParts::Index(&[&index]))
                     .body(body)
                     .send()
                     .await
@@ -311,7 +312,7 @@ impl<T: Serialize + DeserializeOwned + Unpin + 'static> Handler<EsCmd<T>> for Es
 pub struct ScrollBytesStream<T: Serialize + DeserializeOwned + 'static> {
     #[pin]
     fut: Option<BoxFuture<'static, Result<Option<ScrollResponse<T>>>>>,
-    index: &'static str,
+    index: String,
     query: Value,
     start_bytes_sent: bool,
     current: usize,
@@ -320,7 +321,7 @@ pub struct ScrollBytesStream<T: Serialize + DeserializeOwned + 'static> {
 }
 
 impl<T: Serialize + DeserializeOwned + 'static> ScrollBytesStream<T> {
-    pub fn new(index: &'static str, query: Value, client: Elasticsearch) -> Self {
+    pub fn new(index: String, query: Value, client: Elasticsearch) -> Self {
         Self {
             fut: None,
             current: 0,
@@ -337,7 +338,7 @@ impl<T: Serialize + DeserializeOwned + 'static> ScrollBytesStream<T> {
 pub struct ScrollItemsStream<T: Serialize + DeserializeOwned + 'static> {
     #[pin]
     fut: Option<BoxFuture<'static, Result<Option<ScrollResponse<T>>>>>,
-    index: &'static str,
+    index: String,
     query: Value,
     current: usize,
     total: Option<usize>,
@@ -345,7 +346,7 @@ pub struct ScrollItemsStream<T: Serialize + DeserializeOwned + 'static> {
 }
 
 impl<T: Serialize + DeserializeOwned + 'static> ScrollItemsStream<T> {
-    pub fn new(index: &'static str, query: Value, client: Elasticsearch) -> Self {
+    pub fn new(index: String, query: Value, client: Elasticsearch) -> Self {
         Self {
             fut: None,
             current: 0,
@@ -365,7 +366,8 @@ impl<T: Serialize + DeserializeOwned + 'static> Stream for ScrollBytesStream<T> 
 
         if this.fut.is_none() && *this.current == 0 && this.total.is_none() {
             this.fut.as_mut().set(Some(
-                scroll_start_response(this.index, this.query.clone(), this.client.clone()).boxed(),
+                scroll_start_response(this.index.clone(), this.query.clone(), this.client.clone())
+                    .boxed(),
             ));
         }
 
@@ -462,7 +464,8 @@ impl<T: Serialize + DeserializeOwned + 'static> Stream for ScrollItemsStream<T> 
 
         if this.fut.is_none() && *this.current == 0 && this.total.is_none() {
             this.fut.as_mut().set(Some(
-                scroll_start_response(this.index, this.query.clone(), this.client.clone()).boxed(),
+                scroll_start_response(this.index.clone(), this.query.clone(), this.client.clone())
+                    .boxed(),
             ));
         }
 
@@ -524,13 +527,13 @@ impl<T: Serialize + DeserializeOwned + 'static> Stream for ScrollItemsStream<T> 
 }
 
 async fn scroll_start_response<T: DeserializeOwned>(
-    index: &'static str,
+    index: String,
     query: Value,
     client: Elasticsearch,
 ) -> Result<Option<ScrollResponse<T>>> {
     Ok(Some(
         client
-            .search(SearchParts::Index(&[index]))
+            .search(SearchParts::Index(&[&index]))
             .scroll("30s")
             .body(query)
             .send()
