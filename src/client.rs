@@ -388,7 +388,16 @@ impl<T: Serialize + DeserializeOwned + 'static> Stream for ScrollBytesStream<T> 
                     let hits = scroll_resp.hits.hits;
                     let hits_len = hits.len();
 
-                    let total = *this.total.get_or_insert(scroll_resp.hits.total.value);
+                    let total = *this.total.get_or_insert({
+                        #[cfg(feature = "v5")]
+                        {
+                            scroll_resp.hits.total
+                        }
+                        #[cfg(not(feature = "v5"))]
+                        {
+                            scroll_resp.hits.total.value
+                        }
+                    });
 
                     if total == 0 {
                         this.fut
@@ -486,7 +495,16 @@ impl<T: Serialize + DeserializeOwned + 'static> Stream for ScrollItemsStream<T> 
                     let hits = scroll_resp.hits.hits;
                     let hits_len = hits.len();
 
-                    let total = *this.total.get_or_insert(scroll_resp.hits.total.value);
+                    let total = *this.total.get_or_insert({
+                        #[cfg(feature = "v5")]
+                        {
+                            scroll_resp.hits.total
+                        }
+                        #[cfg(not(feature = "v5"))]
+                        {
+                            scroll_resp.hits.total.value
+                        }
+                    });
 
                     if total == 0 {
                         this.fut

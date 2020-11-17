@@ -12,11 +12,15 @@ pub struct Shards {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HitsWrapper<T> {
+    #[cfg(not(feature = "v5"))]
     pub total: HitsTotal,
+    #[cfg(feature = "v5")]
+    pub total: usize,
     pub max_score: Option<f32>,
     pub hits: Vec<Hit<T>>,
 }
 
+#[cfg(not(feature = "v5"))]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HitsTotal {
     pub value: usize,
